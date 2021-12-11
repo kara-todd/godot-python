@@ -1,6 +1,4 @@
 import os
-import re
-from uuid import uuid4
 from io import BytesIO
 from zipfile import ZipFile
 from urllib.request import urlopen, HTTPError
