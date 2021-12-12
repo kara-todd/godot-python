@@ -82,7 +82,7 @@ static void _initialize(void *userdata, GDNativeInitializationLevel p_level) {
 
     int ret = import__pythonscript();
     if (ret != 0){
-        GD_PRINT_ERROR("Cannot load godot python module");
+        GD_PRINT_ERROR("Pythonscript: Cannot load Python module `_pythonscript`");
         return;
     }
     _pythonscript_initialize();
@@ -102,7 +102,7 @@ static void _deinitialize(void *userdata, GDNativeInitializationLevel p_level) {
 
     int ret = Py_FinalizeEx();
     if (ret != 0) {
-        GD_PRINT_ERROR("Cannot finalize python interpreter");
+        GD_PRINT_ERROR("Pythonscript: Cannot finalize Python interpreter");
     }
 }
 
@@ -112,7 +112,7 @@ GDNativeBool GDN_EXPORT pythonscript_init(
     GDNativeInitialization *r_initialization
 ) {
     if (p_interface == NULL || r_initialization == NULL) {
-        printf("Pythonscript error: Invalid init parameters provided by Godot (this should never happen !)\n");
+        printf("Pythonscript: Invalid init parameters provided by Godot (this should never happen !)\n");
         return false;
     }
     gdapi = p_interface;

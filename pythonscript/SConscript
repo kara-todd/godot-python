@@ -29,7 +29,7 @@ env.AppendUnique(LIBPATH=[Dir(".")])
 env.AppendUnique(CYTHON_COMPILE_DEPS=[libpythonscript])
 
 
-# SConscript(["godot/SConscript"])
+SConscript(["godot/SConscript"])
 
 
 # `_pythonscript_api.h` is only for internal use between _godot and pythonscript
