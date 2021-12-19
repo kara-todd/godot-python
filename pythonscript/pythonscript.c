@@ -117,6 +117,15 @@ GDNativeBool GDN_EXPORT pythonscript_init(
     }
     gdapi = p_interface;
 
+    if (p_interface) {
+        if (
+            p_interface->version_major != SUPPORTED_GODOT_VERSION_MAJOR ||
+            p_interface->version_minor != SUPPORTED_GODOT_VERSION_MINOR ||
+            p_interface->version_patch != SUPPORTED_GODOT_VERSION_PATCH
+        ) {
+        }
+    }
+
     // TODO: Or is it GDNATIVE_INITIALIZATION_SERVERS ?
     r_initialization->minimum_initialization_level  = GDNATIVE_INITIALIZATION_CORE;
 	r_initialization->userdata = NULL;

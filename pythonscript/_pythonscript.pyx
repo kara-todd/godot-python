@@ -1,6 +1,5 @@
-# `_godot` module contains all the callbacks needed by Godot's Pluginscript
-# system to expose Python as a language to Godot (see pythonscript.c for
-# more on this).
+# `_pythonscript` module contains all the callbacks needed to expose Python
+# as a language to Godot (see pythonscript.c for more on this).
 # Hence there is no point of importing this module from Python given it
 # only expose C functions.
 # Beside this module depend on the `godot.hazmat` module so it would be a bad
