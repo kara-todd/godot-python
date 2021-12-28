@@ -18,7 +18,13 @@ RuleFnSignature = Callable  # TODO
 class Rule:
     __slots__ = ("name", "outputs", "inputs")
 
-    def __init__(self, name: str, outputs: List[TargetLike], inputs: List[TargetLike], fn: RuleFnSignature):
+    def __init__(
+        self,
+        name: str,
+        outputs: List[TargetLike],
+        inputs: List[TargetLike],
+        fn: RuleFnSignature,
+    ):
         self.name = name
         self.outputs = [Target(x) for x in outputs]
         self.inputs = [Target(x) for x in inputs]

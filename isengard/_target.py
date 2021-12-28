@@ -26,7 +26,7 @@ class Target:
 
 
 class FileTarget(Target):
-    __slots__ = ("path", )
+    __slots__ = ("path",)
 
     def __init__(self, path):
         self.path = Path(path)
@@ -51,7 +51,7 @@ class FileTarget(Target):
 
 
 class FolderTarget(Target):
-    __slots__ = ("path", )
+    __slots__ = ("path",)
 
     def __str__(self):
         return f"{self.path}"
@@ -68,7 +68,7 @@ class FolderTarget(Target):
 
 
 class VirtualTarget(Target):
-    __slots__ = ("name", )
+    __slots__ = ("name",)
 
     def __str__(self):
         return f"{self.name}@"

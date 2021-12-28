@@ -1,257 +1,251 @@
-from ._api import Isengard, get_parent
-from ._graph import Rule, Target
-
-__all__ = (
-    "Isengard",
-    "get_parent",
-    "Rule",
-    "Target",
-)
-
-# import os
-# import asyncio
-# import sqlite3
-# from enum import Enum
-# from contextvars import ContextVar
-# from pathlib import Path
-# from typing import Dict, List, Set, Callable, Union, Optional, Any
-# import inspect
-# from dataclasses import dataclass
-# from contextlib import asynccontextmanager
+from contextvars import ContextVar
+import subprocess
+from pathlib import Path, PurePath
+from typing import Dict, List, Set, Tuple, Callable, Union, Optional, Any, Union, TypeVar
+import inspect
 
 
-# # class SQLiteDB:
-# #     def __init__(self, con):
-# #         self.con = con
-
-# #     async def execute(self):
-# #         pass
-
-# #     @asynccontextmanager
-# #     @classmethod
-# #     async def run(cls, path):
-# #         con = sqlite3.connect('example.db')
-# #         try:
-# #             yield cls(con)
-
-# #         finally:
-# #             con.close()
+C = TypeVar("C", bound=Callable[..., None])
+_RESERVED_CONFIG_NAMES = {"output", "output", "inputs", "input", "basedir"}
 
 
-# _current_dir: ContextVar[Path] = ContextVar('current_dir')
+class Target:
+    __slots__ = ("workdir", "unresolved")
+
+    def __init__(self, workdir, unresolved):
+        self.workdir = workdir
+        self.unresolved = unresolved
+
+    def resolve(self, config) -> Path:
+        try:
+            resolved = Path(self.unresolved.format(**config))
+        except KeyError as exc:
+            raise ValueError(f"Unknown config `{exc.args[0]}`")
+        if resolved.is_absolute():
+            return resolved
+        else:
+            return self.workdir / resolved
 
 
-# RuleFnSignature = Callable[[], None]  # TODO
-# MetaRuleFnSignature = Callable[[], None]  # TODO
+TargetLike = Union[str, Target]
 
 
-# @dataclass()
-# class Item:
-#     pass
+_parent: ContextVar["Isengard"] = ContextVar("context")
 
 
-# @dataclass()
-# class RuleItem(Item):
-#     pass
+def get_parent() -> "Isengard":
+    try:
+        return _parent.get()
+    except LookupError as exc:
+        raise RuntimeError("Not in a subdir !") from exc
 
 
-# @dataclass()
-# class ConfigItem(Item):
-#     value: Any
+def extract_config_from_signature(fn: Callable) -> Set[str]:
+    config = set()
+    signature = inspect.signature(fn)
+    for param in signature.parameters.values():
+        if not param.empty:
+            raise TypeError(f"Default value to parameters not allowed")
+        if param.kind == param.VAR_POSITIONAL:
+            raise TypeError(f"*args parameter not allowed")
+        if param.kind == param.VAR_KEYWORD:
+            raise TypeError(f"**kwargs parameter not allowed")
+        config.add(param.name)
+    return config
 
 
-# class IsengardError(Exception):
-#     pass
+class Isengard:
+    def __init__(
+        self,
+        self_file: Union[str, Path],
+        db: Union[str, Path] = ".isengard.sqlite",
+        subdir_default_filename: Optional[str] = None,
+    ):
+        entrypoint_path = Path(self_file).absolute()
+        self._subdir_default_filename = subdir_default_filename or entrypoint_path
+        self._entrypoint_name = entrypoint_path.name
+        self._entrypoint_dir = entrypoint_path.parent
+        self._workdir = self._entrypoint_dir  # Modified when reading subdir
+        # TODO: allow other types in configuration ?
+        self._config: Optional[Dict[str, Union[str, Path, Tuple[Union[str, Path]]]]] = None
 
+        if not isinstance(db, Path):
+            db = Path(db)
+        if not db.is_absolute():
+            db = self._entrypoint_dir / db
+        self._db_path = db
 
-# class IsengardConsistencyError(IsengardError):
-#     pass
+        self._rules = []
+        self._resolved_rules = []
+        self._lazy_configs = []
+        # self._rules_graph = RulesGraph()
+        # self._meta_rules: Dict[str, MetaRuleFnSignature] = {}
 
+    def subdir(self, subdir: str, filename: Optional[str] = None) -> None:
+        previous_workdir = self._workdir
+        token = _parent.set(self)
+        try:
+            # Temporary self modification is not a very clean approach
+            # but at least it's fast&simple ;-)
+            self._workdir /= subdir
+            subscript_path = self._workdir / (filename or self._subdir_default_filename)
+            code = compile(subscript_path.read_text(), subscript_path, "exec")
+            exec(code)
+        finally:
+            self._workdir = previous_workdir
+            _parent.reset(token)
 
-# class IsengardDefinitionError(IsengardError):
-#     pass
+    @property
+    def basedir(self):
+        return self._entrypoint_dir
 
+    def configure(self, **config):
+        """
+        Note passing configuration as function arguments limit the name you can use
+        (e.g. `compiler.c.flags` is not a valid name). This is intended to work
+        well with dependency injection in the rule where configuration is requested
+        by using it name as function argument.
+        """
+        for k, v in config.items():
+            if isinstance(v, (str, Path)):
+                continue
+            elif isinstance(v, tuple):
+                for x in v:
+                    if not isinstance(x, (str, Path)):
+                        break
+                else:
+                    continue
+            raise ValueError(
+                f"Invalid configuration `{k}`: value must be a str/Path or a tuple of str/Path"
+            )
+        invalid_config_names = config.keys() & _RESERVED_CONFIG_NAMES
+        if invalid_config_names:
+            raise ValueError(f"Reserved config name(s): {', '.join(invalid_config_names)}")
+        config["basedir"] = self.basedir
 
-# class EdgeType(Enum):
-#     FILE = "File"
-#     FOLDER = "Folder"
-#     VIRTUAL = "Virtual"
+        to_run = self._lazy_configs
+        cannot_run_yet = []
+        while to_run:
+            for fn in to_run:
+                kwargs = {}
+                for k in extract_config_from_signature(fn):
+                    try:
+                        kwargs[k] = config[k]
+                    except KeyError:
+                        cannot_run_yet.append(fn)
+                        break
+                else:
+                    config[fn.__name__] = fn(**kwargs)
 
+            if to_run == cannot_run_yet:
+                # Unknown config or recursive dependency between two lazy configs
+                errors = []
+                for fn in cannot_run_yet:
+                    for missing in extract_config_from_signature(fn) - config.keys():
+                        errors.append(f"Unknown `{missing}` needed by `{fn.__name__}`")
+                raise RuntimeError(f"Invalid lazy config: {', '.join(errors)}")
+            else:
+                to_run = cannot_run_yet
+                cannot_run_yet = []
 
-# class Edge(str):
-#     __slots__ = ()
+        self._config = config
+        for name, needed_config, outputs, inputs, fn in self._rules:
+            try:
+                self._resolved_rules.append(
+                    (
+                        name,
+                        needed_config,
+                        [x.resolve(config) for x in outputs],
+                        [x.resolve(config) for x in inputs],
+                        fn
+                    )
+                )
+            except ValueError as exc:
+                raise ValueError(f"Invalid rule `{name}`: {exc.args[0]}") from exc
 
-#     def __new__(cls, name):
-#         if len(name) < 2:
-#             raise ValueError("Invalid edge name")
-#         if name[0] not in "/#@":
-#             ValueError("Invalid edge type: must be `/` for folder, `#` for file or `@` for virtual edge")
-#         return super().__new__(cls, name)
+    def lazy_config(self, fn):
+        if self._config is not None:
+            raise RuntimeError("Cannot create new lazy config once configure has been called !")
 
-#     @property
-#     def type(self):
-#         if self[0] == "/":
-#             return EdgeType.FOLDER
-#         elif self[0] == "#":
-#             return EdgeType.FILE
-#         else:  # "@"
-#             return EdgeType.VIRTUAL
+        self._lazy_configs.append(fn)
 
+    def rule(self,
+        outputs: Optional[List[TargetLike]]=None,
+        output: Optional[TargetLike]=None,
+        inputs: Optional[List[TargetLike]]=None,
+        input: Optional[TargetLike]=None,
+        name: Optional[str]=None
+    ) -> Callable[[C], C]:
+        if self._config is not None:
+            raise RuntimeError("Cannot create new rules once configure has been called !")
 
-# @dataclass()
-# class Rule:
-#     name: str
-#     outputs: List[Edge]
-#     inputs: List[Edge]
-#     fn: Callable
+        def wrapper(fn: C) -> C:
+            nonlocal outputs, inputs
+            needed_config = extract_config_from_signature(fn)
 
+            if output is not None:
+                if outputs is not None:
+                    raise TypeError("Cannot define both `output` and `outputs` parameters")
+                else:
+                    outputs = [output]
+                if "output" not in needed_config or "outputs" in needed_config:
+                    raise TypeError("Function must have a `output` and no `outputs` parameter")
+            elif outputs is not None:
+                if "outputs" not in needed_config or "output" in needed_config:
+                    raise TypeError("Function must have a `outputs` and no `output` parameter")
+            else:
+                raise TypeError("One of `output` or `outputs` parameters is mandatory")
 
-# # class RulesGraph:
-# #     def __init__(self):
-# #         self.rules: List[Rule] = []
-# #         self.output_to_rule: Dict[Edge, Rule] = {}
-# #         self.rule_dependencies: Dict[Rule, Set[Rule]] = {}
+            if input is not None:
+                if inputs is not None:
+                    raise TypeError("Cannot define both `input` and `inputs` parameters")
+                else:
+                    inputs = [input]
+                if "input" not in needed_config or "inputs" in needed_config:
+                    raise TypeError("Function must have an `input` and no `inputs` parameter")
+            elif inputs is not None:
+                if "inputs" not in needed_config or "input" in needed_config:
+                    raise TypeError("Function must have an `inputs` and no `input` parameter")
+            else:
+                inputs = []
 
-# #     def add_rule(self, rule: Rule) -> None:
-# #         deps = set()
-# #         for input in rule.inputs:
-# #             try:
-# #                 dep = self.output_to_rule[input]
+            # TODO: better check target format here ?
+            outputs = [Target(self._workdir, x) for x in outputs]
+            inputs = [Target(self._workdir, x) for x in inputs]
 
-# #             except IndexError:
-# #                 pass
+            self._rules.append((name or fn.__name__, needed_config, outputs, inputs, fn))
+            return fn
 
-# #         for output in rule.outputs:
-# #             self.rules.append(rule)
-# #             existing = self.output_to_rule.setdefault(output, rule)
-# #             if existing is not rule:
-# #                 raise IsengardConsistencyError(f"Edge {output} can be generated by multiple rules: {existing} and {rule}")
+        return wrapper
 
+    def run(self, target: Path) -> None:
+        if self._config is None:
+            raise RuntimeError("Must call configure before !")
 
-# def check_consistency(name: Edge, rules: List[Rule]) -> None:
-#     return
+        target = target.absolute()
+        for rule in self._resolved_rules:
+            name, needed_config, outputs, inputs, fn = rule
+            if target not in outputs:
+                continue
+            kwargs = {}
+            for k in needed_config:
+                if k == "output":
+                    kwargs["output"] = outputs[0]
+                elif k == "outputs":
+                    kwargs["outputs"] = outputs
+                elif k == "input":
+                    kwargs["input"] = inputs[0]
+                elif k == "inputs":
+                    kwargs["inputs"] = inputs
+                else:
+                    kwargs[k] = self._config[k]
+            fn(**kwargs)
 
+        else:
+            raise ValueError("Not rule has this target as output")
 
-# async def run(name: Edge, rules: List[Rule], workdir: Path, dbpath: Path) -> Any:
-#     check_consistency(name, rules)
+        # runner = Runner(self._rules_graph, self._workdir, self._db_path)
+        # return runner.run(name)
 
-#     async def _run(name, rules, results, stack):
-#         assert name not in stack
-#         stack = {*stack, name}
-#         rule = deps_map.get(name)
-#         assert rule
-
-#         inputs = []
-#         for input in rule.inputs:
-#             if isinstance(input, RuleItem):
-#                 inputs.append(await _run(input.name, rules, results))
-#             else:
-#                 inputs.append(input.value)
-
-#         if inspect.iscoroutinefunction(rule.fn):
-#             results = await rule.fn(**inputs)
-#         else:
-#             results = rule.fn(**inputs)
-#         assert len(results) == len(rule.outputs)
-#         for result, output in zip(results, rule.outputs):
-#             results[output.name] = result
-
-#         return result[name]
-
-#     results = {}
-#     stack = set()
-#     return _run(name, rules, results, stack)
-
-
-# def extract_virtual_edges_from_fn(fn: Callable):
-#     edges: List[Edge] = []
-#     signature = inspect.signature(fn)
-#     for param in signature.parameters.values():
-#         if not param.empty:
-#             raise IsengardDefinitionError(f"Rule {fn} cannot have default value to parameters")
-#         if not param.kind == param.VAR_POSITIONAL:
-#             raise IsengardDefinitionError(f"Rule {fn} cannot have *args parameter")
-#         if not param.kind == param.VAR_KEYWORD:
-#             raise IsengardDefinitionError(f"Rule {fn} cannot have **kwargs parameter")
-#         edges.append(f"{param.value}@")
-#     return edges
-
-
-# class Isengard:
-#     def __init__(self, self_file: Union[str, Path], db: Union[str, Path]=".isengard.sqlite"):
-#         self.self_file = Path(self_file).absolute()
-#         self.base_dir = self.self_file.parent
-#         if not isinstance(db, Path):
-#             db = Path(db)
-#         if not db.is_absolute():
-#             db = self.base_dir / db
-#         self.db_file = db
-#         # self.dbcon = sqlite3.connect(str(db))
-#         self.rules: List[Rule] = []
-#         self.meta_rules: Dict[str, Callable] = {}
-
-#     def rule(self, targets=None, target=None, sources=None, source=None, name=None):
-#         if target is not None:
-#             if targets is not None:
-#                 raise IsengardDefinitionError("Cannot define both `target` and `targets` parameters")
-#             else:
-#                 targets = [target]
-#         elif targets is None:
-#             raise IsengardDefinitionError("One of `target` or `targets` parameters is mandatory")
-
-#         if source is not None:
-#             if sources is not None:
-#                 raise IsengardDefinitionError("Cannot define both `source` and `sources` parameters")
-#             else:
-#                 sources = [source]
-#         elif sources is None:
-#             sources = []
-
-#         def wrapper(fn):
-#             all_targets = [*targets, *extract_virtual_edges_from_fn(fn)]
-#             rule = Rule(name=name or fn.__name__, outputs=all_targets, inputs=sources, fn=fn)
-#             self.rules.append(Rule(name, fn))
-#             return fn
-
-#         return wrapper
-
-#     def meta_rule(self, fn: MetaRuleFnSignature) -> MetaRuleFnSignature:
-#         try:
-#             existing = self.meta_rules[fn.__name__]
-#             raise RuntimeError(f"Meta-rule {fn.__name__} already exists ({existing})")
-#         except KeyError:
-#             self.meta_rules.append(fn)
-#         return fn
-
-#     def __getattr__(self, name):
-#         try:
-#             return self.meta_rules[name]
-#         except KeyError as exc:
-#             raise AttributeError from exc
-
-#     def clone(self):
-#         raise NotImplementedError("TODO !")
-
-#     def subdir(self, subdir: str, filename: Optional[str] = None) -> None:
-#         subdir_path = self.self_file.parent / subdir / (filename or self.self_file.name)
-#         isg = Isengard(subdir_path)
-#         token = _parent.set(isg)
-#         try:
-#             exec(subdir_path.read_text())
-#             self.rules += isg.rules
-#         finally:
-#             token.reset()
-#         # if subdir_path.read
-
-#     def run(self, name: str) -> Any:
-#         return await run(name, self.rules, self.workdir, self.dbpath)
-
-
-# _parent: ContextVar[Isengard] = ContextVar('context')
-
-
-# def get_parent() -> Isengard:
-#     try:
-#         return _parent.get()
-#     except LookupError as exc:
-#         raise RuntimeError("Not in a subdir !") from exc
+    # def main(self, argv: str) -> Any:
+    #     self.run(argv[1])

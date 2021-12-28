@@ -9,7 +9,8 @@ from ._runner import Runner
 
 MetaRuleFnSignature = Callable[..., Rule]
 
-_parent: ContextVar["Isengard"] = ContextVar('context')
+_parent: ContextVar["Isengard"] = ContextVar("context")
+
 
 def get_parent() -> "Isengard":
     try:
@@ -43,7 +44,12 @@ class Isengard:
         "_meta_rules",
     )
 
-    def __init__(self, self_file: Union[str, Path], db: Union[str, Path]=".isengard.sqlite", subdir_default_filename: Optional[str] = None):
+    def __init__(
+        self,
+        self_file: Union[str, Path],
+        db: Union[str, Path] = ".isengard.sqlite",
+        subdir_default_filename: Optional[str] = None,
+    ):
         entrypoint_path = Path(self_file).absolute()
         self._subdir_default_filename = subdir_default_filename or entrypoint_path
         self._entrypoint_name = entrypoint_path.name
@@ -59,7 +65,14 @@ class Isengard:
         self._rules_graph = RulesGraph()
         self._meta_rules: Dict[str, MetaRuleFnSignature] = {}
 
-    def rule(self, outputs: Optional[List[TargetLike]]=None, output: Optional[TargetLike]=None, inputs: Optional[List[TargetLike]]=None, input: Optional[TargetLike]=None, name: Optional[str]=None):
+    def rule(
+        self,
+        outputs: Optional[List[TargetLike]] = None,
+        output: Optional[TargetLike] = None,
+        inputs: Optional[List[TargetLike]] = None,
+        input: Optional[TargetLike] = None,
+        name: Optional[str] = None,
+    ):
         if output is not None:
             if outputs is not None:
                 raise TypeError("Cannot define both `output` and `outputs` parameters")
@@ -78,7 +91,9 @@ class Isengard:
 
         def wrapper(fn: RuleFnSignature) -> RuleFnSignature:
             all_outputs = [*outputs, *extract_virtual_targets_from_signature(fn)]
-            rule = Rule(name=name or fn.__name__, outputs=all_outputs, inputs=inputs, fn=fn)
+            rule = Rule(
+                name=name or fn.__name__, outputs=all_outputs, inputs=inputs, fn=fn
+            )
             self._rules_graph.add(rule)
             return fn
 
